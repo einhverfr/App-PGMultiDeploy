@@ -1,20 +1,26 @@
-package App::PGMultiDeploy;
 
 use 5.006;
 use strict;
 use warnings;
+package App::PGMultiDeploy;
+use Moo;
+use DBI;
+use Carp;
+use Config::IniFiles;
+use PGObject::Util::DBChange;
+use Try::Tiny;
 
 =head1 NAME
 
-App::PGMultiDeploy - The great new App::PGMultiDeploy!
+App::PGMultiDeploy - OO deployment to multiple dbs for Pg
 
 =head1 VERSION
 
-Version 0.01
+Version 0.001
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.001000';
 
 
 =head1 SYNOPSIS
@@ -25,28 +31,125 @@ Perhaps a little code snippet.
 
     use App::PGMultiDeploy;
 
-    my $foo = App::PGMultiDeploy->new();
-    ...
+    my $foo = App::PGMultiDeploy->new( config_file => 'path/to/conf.ini',
+                                       change_file => 'path/to/change.sql',
+                                       dbgroup => 'defined_in_config');
+    $foo->deploy;
 
-=head1 EXPORT
+=head1 PROPERTIES
 
-A list of functions that can be exported.  You can delete this section
-if you don't export anything, such as for a purely object-oriented module.
+=head2 config_file
+
+The ini file defining the environment configuration
+
+=cut
+
+has config_file => (is => 'ro', 
+                    isa => sub { die 'Config File not found' unless -f $_[0] }
+);
+
+=head2 config (lazily loaded from config file)
+
+=cut
+
+=head2 dbgroup
+
+=cut
+
+has dbgroup => (is => 'ro');
+
+=head2 change_file
+
+Path to db change
+
+=cut
+
+has change_file => (is => 'ro', 
+                   isa => sub { die 'Change File not found' unless -f $_[0] }
+);
+
+=head2 config
+
+The configuration object loaded from the config file
+
+=cut
+
+has config => (is => 'lazy');
+
+sub _build_config{
+   my ($self) = @_;
+   my $config = Config::IniFiles->new(-file => $self->config_file);
+   return $config;
+}
+=head2 dbchange
+
+The db change object, loaded from file
+
+=cut
+
+has dbchange => (is => 'lazy');
+
+sub _build_dbchange{
+    my ($self) = @_;
+    my $dbchange = PGObject::Util::DBChange->new(
+         path => $self->change_file, 
+         commit_txn => "PREPARE TRANSACTION 'multideploy'"
+    );
+}
+
+has succeeded => (is => 'rwp', default => 1);
 
 =head1 SUBROUTINES/METHODS
 
-=head2 function1
+=head2 deploy
 
 =cut
 
-sub function1 {
+sub deploy {
+    my ($self) = @_;
+    local $PGObject::Util::DBChange::commit = 0;
+    my @dbgroup = $self->config->val("dbgroups", $self->dbgroup)
+                  or die 'Cannot find db group ' . $self->dbgroup;
+    
+    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, {AutoCommit => 0}) }
+                  @dbgroup;
+    for (@dbs) {
+        PGObject::Util::DBChange::init($_) 
+           if PGObject::Util::DBChange::needs_init($_);
+    }
+    $_->commit for @dbs;
+    my @logs = map { $self->_apply_if_needed($_) } @dbs;
+    if ($self->succeeded){
+        $_->commit for @dbs;
+    } else {
+        $_->rollback for @dbs;
+    }
+    $self->dbchange->log(%$_) for grep {defined $_} @logs;
+    $_->commit for @dbs;
 }
 
-=head2 function2
+sub _connstr{
+    my ($self, $dbname) = @_;
+    my $cnx = $self->config->val('databases', $dbname);
+    die 'No connection configured for ' . $dbname unless defined $cnx;
+    warn $cnx;
+    return 'dbi:Pg:' . $self->config->val('databases', $dbname);
+}
 
-=cut
-
-sub function2 {
+sub _apply_if_needed {
+    my ($self, $dbh) = @_;
+    if ($self->dbchange->is_applied($dbh)){
+        warn 'Change already applied';
+        return;
+    } else {
+       try {
+           $self->dbchange->apply($dbh);
+       } catch {
+           warn "Could not apply change";
+           $self->_set_succeeded(0);
+       };
+       return {state => $DBI::state, errstr => $DBI::errstr, dbh => $dbh};
+    }
 }
 
 =head1 AUTHOR
@@ -94,6 +197,7 @@ L<http://search.cpan.org/dist/App-PGMultiDeploy/>
 
 =head1 ACKNOWLEDGEMENTS
 
+Many thanks to Sedex Global for funding the initial version of this tool.
 
 =head1 LICENSE AND COPYRIGHT
 

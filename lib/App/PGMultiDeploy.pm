@@ -1,11 +1,13 @@
-package App::PGMultiDeploy;
 
 use 5.006;
 use strict;
 use warnings;
 package App::PGMultiDeploy;
 use Moo;
-use Config::General;
+use DBI;
+use Carp;
+use Config::IniFiles;
+use PGObject::Util::DBChange;
 use Try::Tiny;
 
 =head1 NAME
@@ -76,8 +78,8 @@ has config => (is => 'lazy');
 
 sub _build_config{
    my ($self) = @_;
-   my %config = Config::General->new($self->config_file);
-   return \%config;
+   my $config = Config::IniFiles->new(-file => $self->config_file);
+   return $config;
 }
 =head2 dbchange
 
@@ -90,7 +92,8 @@ has dbchange => (is => 'lazy');
 sub _build_dbchange{
     my ($self) = @_;
     my $dbchange = PGObject::Util::DBChange->new(
-         path => $self->change_file, commit_txn => 'PREPARE TRANSACTION;'
+         path => $self->change_file, 
+         commit_txn => "PREPARE TRANSACTION 'multideploy'"
     );
 }
 
@@ -105,10 +108,16 @@ has succeeded => (is => 'rwp', default => 1);
 sub deploy {
     my ($self) = @_;
     local $PGObject::Util::DBChange::commit = 0;
-    my $dbgroup = $self->config->{"dbgroups"}->{$self->dbgroup}
+    my @dbgroup = $self->config->val("dbgroups", $self->dbgroup)
                   or die 'Cannot find db group ' . $self->dbgroup;
-    my @dbs = map { DBI->connect($self->_connstr($_), {Autocommit => 0}) }
-                  @$dbgroup;
+    
+    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, {AutoCommit => 0}) }
+                  @dbgroup;
+    for (@dbs) {
+        PGObject::Util::DBChange::init($_) 
+           if PGObject::Util::DBChange::needs_init($_);
+    }
+    $_->commit for @dbs;
     my @logs = map { $self->_apply_if_needed($_) } @dbs;
     if ($self->succeeded){
         $_->commit for @dbs;
@@ -116,11 +125,15 @@ sub deploy {
         $_->rollback for @dbs;
     }
     $self->dbchange->log(%$_) for grep {defined $_} @logs;
+    $_->commit for @dbs;
 }
 
 sub _connstr{
     my ($self, $dbname) = @_;
-    return $self->config->{databases}->{$dbname};
+    my $cnx = $self->config->val('databases', $dbname);
+    die 'No connection configured for ' . $dbname unless defined $cnx;
+    warn $cnx;
+    return 'dbi:Pg:' . $self->config->val('databases', $dbname);
 }
 
 sub _apply_if_needed {

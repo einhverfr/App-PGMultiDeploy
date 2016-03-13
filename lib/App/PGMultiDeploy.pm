@@ -16,14 +16,42 @@ App::PGMultiDeploy - OO deployment to multiple dbs for Pg
 
 =head1 VERSION
 
-Version 0.001
+Version 0.003
 
 =cut
 
-our $VERSION = 0.002000;
+our $VERSION = 0.003000;
 
 
 =head1 SYNOPSIS
+
+This package provides a library and a command line utility to run sql scripts
+on multiple pg databases relying on two phase commit to ensure the script 
+succeeds or fails.  Scripts can only be applied once and the intended use is to
+manage schema changes over time in databases subject to row-level logical
+replication.
+
+Features:
+
+=over
+
+=item Recovery for partial application
+
+A change file is not re-applied if it has been applied before unless the file
+has changed.  This means if another system using PGObject::Util::DBChange 
+applies a file to one db, you can still safely use it here.
+
+=item Two phase commit
+
+A change file either commits or rolls back on every database in a group
+
+=item Reuse of libpq tooling
+
+.pgpass etc files work with this tool
+
+=item Logging of failures in separate transaction
+
+=back
 
 Use as a library:
 
@@ -95,7 +123,7 @@ sub _build_dbchange{
     my ($self) = @_;
     my $dbchange = PGObject::Util::DBChange->new(
          path => $self->change_file, 
-         commit_txn => "PREPARE TRANSACTION 'multideploy'"
+         commit_txn => "FAIL" # don't allow direct application
     );
 }
 
@@ -113,7 +141,8 @@ sub deploy {
     my @dbgroup = $self->config->val("dbgroups", $self->dbgroup)
                   or die 'Cannot find db group ' . $self->dbgroup;
     
-    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, {AutoCommit => 0}) }
+    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, 
+               {AutoCommit => 1, pg_server_prepare => 0}) }
                   @dbgroup;
     for (@dbs) {
         PGObject::Util::DBChange::init($_) 
@@ -122,9 +151,11 @@ sub deploy {
     $_->commit for @dbs;
     my @logs = map { $self->_apply_if_needed($_) } @dbs;
     if ($self->succeeded){
-        $_->commit for @dbs;
+        $_->{dbh}->do("COMMIT PREPARED '$_->{txn_id}'")
+            for grep {defined $_} @logs
     } else {
-        $_->rollback for @dbs;
+        $_->{dbh}->do("ROLLBACK PREPARED '$_->{txn_id}'")
+            for grep {defined $_} @logs
     }
     $self->dbchange->log(%$_) for grep {defined $_} @logs;
     $_->commit for @dbs;
@@ -138,19 +169,27 @@ sub _connstr{
     return 'dbi:Pg:' . $self->config->val('databases', $dbname);
 }
 
+my $counter = 0;
 sub _apply_if_needed {
     my ($self, $dbh) = @_;
-    if ($self->dbchange->is_applied($dbh)){
+    ++$counter;
+    my $txn_id = "multideploy $counter";
+    my $dbchange = PGObject::Util::DBChange->new(
+            %{$self->dbchange}, 
+            commit_txn => "PREPARE TRANSACTION '$txn_id';",
+    );
+    if ($dbchange->is_applied($dbh)){
         warn 'Change already applied';
         return;
     } else {
        try {
-           $self->dbchange->apply($dbh);
+           $dbchange->apply($dbh);
        } catch {
            warn "Could not apply change";
            $self->_set_succeeded(0);
        };
-       return {state => $DBI::state, errstr => $DBI::errstr, dbh => $dbh};
+       return {state => $DBI::state, errstr => $DBI::errstr, dbh => $dbh,
+               txn_id => $txn_id };
     }
 }
 

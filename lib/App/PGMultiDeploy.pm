@@ -123,7 +123,7 @@ sub _build_dbchange{
     my ($self) = @_;
     my $dbchange = PGObject::Util::DBChange->new(
          path => $self->change_file, 
-         commit_txn => "PREPARE TRANSACTION 'multideploy'"
+         commit_txn => "FAIL" # don't allow direct application
     );
 }
 
@@ -141,7 +141,8 @@ sub deploy {
     my @dbgroup = $self->config->val("dbgroups", $self->dbgroup)
                   or die 'Cannot find db group ' . $self->dbgroup;
     
-    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, {AutoCommit => 0}) }
+    my @dbs = map { DBI->connect($self->_connstr($_), undef, undef, 
+               {AutoCommit => 1, pg_server_prepare => 0}) }
                   @dbgroup;
     for (@dbs) {
         PGObject::Util::DBChange::init($_) 
@@ -150,9 +151,11 @@ sub deploy {
     $_->commit for @dbs;
     my @logs = map { $self->_apply_if_needed($_) } @dbs;
     if ($self->succeeded){
-        $_->commit for @dbs;
+        $_->{dbh}->do("COMMIT PREPARED '$_->{txn_id}'")
+            for grep {defined $_} @logs
     } else {
-        $_->rollback for @dbs;
+        $_->{dbh}->do("ROLLBACK PREPARED '$_->{txn_id}'")
+            for grep {defined $_} @logs
     }
     $self->dbchange->log(%$_) for grep {defined $_} @logs;
     $_->commit for @dbs;
@@ -166,19 +169,27 @@ sub _connstr{
     return 'dbi:Pg:' . $self->config->val('databases', $dbname);
 }
 
+my $counter = 0;
 sub _apply_if_needed {
     my ($self, $dbh) = @_;
-    if ($self->dbchange->is_applied($dbh)){
+    ++$counter;
+    my $txn_id = "multideploy $counter";
+    my $dbchange = PGObject::Util::DBChange->new(
+            %{$self->dbchange}, 
+            commit_txn => "PREPARE TRANSACTION '$txn_id';",
+    );
+    if ($dbchange->is_applied($dbh)){
         warn 'Change already applied';
         return;
     } else {
        try {
-           $self->dbchange->apply($dbh);
+           $dbchange->apply($dbh);
        } catch {
            warn "Could not apply change";
            $self->_set_succeeded(0);
        };
-       return {state => $DBI::state, errstr => $DBI::errstr, dbh => $dbh};
+       return {state => $DBI::state, errstr => $DBI::errstr, dbh => $dbh,
+               txn_id => $txn_id };
     }
 }
 

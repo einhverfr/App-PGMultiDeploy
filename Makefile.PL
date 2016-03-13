@@ -18,8 +18,9 @@ WriteMakefile(
         'Test::More' => 0,
     },
     PREREQ_PM => {
-        #'ABC'              => 1.6,
-        #'Foo::Bar::Module' => 5.0401,
+        'PGObject::Util::DBChanges' => 0,
+        'Config::IniFiles' => 0,
+        'Moo' => 0,
     },
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean => { FILES => 'App-PGMultiDeploy-*' },

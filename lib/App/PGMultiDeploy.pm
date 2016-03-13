@@ -20,14 +20,12 @@ Version 0.001
 
 =cut
 
-our $VERSION = '0.001000';
+our $VERSION = 0.002000;
 
 
 =head1 SYNOPSIS
 
-Quick summary of what the module does.
-
-Perhaps a little code snippet.
+Use as a library:
 
     use App::PGMultiDeploy;
 
@@ -36,9 +34,13 @@ Perhaps a little code snippet.
                                        dbgroup => 'defined_in_config');
     $foo->deploy;
 
+use as a commandline:
+
+    pg_multideploy --config=/path/to/conf.ini --sql=mychanges.sql --dbgroup=foo
+
 =head1 PROPERTIES
 
-=head2 config_file
+=head2 config_file (--config)
 
 The ini file defining the environment configuration
 
@@ -52,13 +54,13 @@ has config_file => (is => 'ro',
 
 =cut
 
-=head2 dbgroup
+=head2 dbgroup (--dbgroup)
 
 =cut
 
 has dbgroup => (is => 'ro');
 
-=head2 change_file
+=head2 change_file (--sql)
 
 Path to db change
 

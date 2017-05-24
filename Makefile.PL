@@ -20,6 +20,9 @@ WriteMakefile(
     PREREQ_PM => {
         'PGObject::Util::DBChanges' => 0,
         'Config::IniFiles' => 0,
+        'DBI' => 0,
+        'DBD::Pg' => 0,
+        'Try::Tiny' => 0,
         'Moo' => 0,
     },
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },

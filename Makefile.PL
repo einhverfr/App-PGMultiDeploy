@@ -18,7 +18,7 @@ WriteMakefile(
         'Test::More' => 0,
     },
     PREREQ_PM => {
-        'PGObject::Util::DBChanges' => 0,
+        'PGObject::Util::DBChange' => 0,
         'Config::IniFiles' => 0,
         'DBI' => 0,
         'DBD::Pg' => 0,

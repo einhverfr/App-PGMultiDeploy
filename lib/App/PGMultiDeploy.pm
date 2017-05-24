@@ -16,11 +16,11 @@ App::PGMultiDeploy - OO deployment to multiple dbs for Pg
 
 =head1 VERSION
 
-Version 0.003.001
+Version 0.004.001
 
 =cut
 
-our $VERSION = 0.003001;
+our $VERSION = 0.004001;
 
 
 =head1 SYNOPSIS
